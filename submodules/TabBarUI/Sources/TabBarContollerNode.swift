@@ -52,9 +52,8 @@ final class TabBarControllerNode: ASDisplayNode {
     
     private var theme: PresentationTheme
     private let itemSelected: (Int, Bool, [ASDisplayNode]) -> Void
-    private let contextAction: (Int, ContextExtractedContentContainingView, ContextGesture) -> Void
-    
-    private let tabBarView = ComponentView<Empty>()
+    private let contextAction: (Int, ContextExtractedContentContainingNode, ContextGesture) -> Void
+    private let tabBarNode: TabBarNode
     
     private let disabledOverlayNode: ASDisplayNode
     private var toolbarNode: ToolbarNode?
@@ -83,7 +82,7 @@ final class TabBarControllerNode: ASDisplayNode {
             } else {
                 self.insertSubnode(currentControllerNode, at: 0)
             }
-            if let tabBarView = self.tabBarView.view {
+            if let tabBarView = self.tabBarNode.view {
                 self.view.bringSubviewToFront(tabBarView)
             }
         }
@@ -105,11 +104,21 @@ final class TabBarControllerNode: ASDisplayNode {
         self.toolbarActionSelected = toolbarActionSelected
         self.disabledPressed = disabledPressed
         
+        self.tabBarNode = TabBarNode(
+            theme: theme,
+            itemSelected: itemSelected,
+            contextAction: contextAction,
+            swipeAction: swipeAction
+        )
+
         super.init()
-        
+
         self.setViewBlock({
             return View(frame: CGRect())
         })
+
+        self.addSubnode(self.tabBarNode)
+        self.addSubnode(self.disabledOverlayNode)
         
         (self.view as? View)?.onLayout = { [weak self] in
             guard let self else {
@@ -124,9 +133,6 @@ final class TabBarControllerNode: ASDisplayNode {
         }
         
         self.backgroundColor = theme.list.plainBackgroundColor
-        
-        //self.addSubnode(self.tabBarNode)
-        //self.addSubnode(self.disabledOverlayNode)
     }
     
     override func didLoad() {
@@ -147,6 +153,7 @@ final class TabBarControllerNode: ASDisplayNode {
         
         self.disabledOverlayNode.backgroundColor = theme.rootController.tabBar.backgroundColor.withAlphaComponent(0.5)
         self.toolbarNode?.updateTheme(ToolbarTheme(theme: theme))
+        self.tabBarNode.updateTheme(theme)
         self.requestUpdate()
     }
     
@@ -190,64 +197,38 @@ final class TabBarControllerNode: ASDisplayNode {
         } else {
             bottomInset = max(bottomInset, 8.0)
         }
-        let sideInset: CGFloat = 20.0
         
-        var selectedId: AnyHashable?
-        if self.selectedIndex < self.tabBarItems.count {
-            selectedId = ObjectIdentifier(self.tabBarItems[self.selectedIndex].item)
-        }
-        var tabBarTransition = ComponentTransition(transition)
-        if self.isChangingSelectedIndex {
-            self.isChangingSelectedIndex = false
-            tabBarTransition = .spring(duration: 0.4)
-        }
-        if self.tabBarView.view == nil {
-            tabBarTransition = .immediate
-        }
-        let tabBarSize = self.tabBarView.update(
-            transition: tabBarTransition,
-            component: AnyComponent(TabBarComponent(
-                theme: self.theme,
-                items: self.tabBarItems.map { item in
-                    let itemId = AnyHashable(ObjectIdentifier(item.item))
-                    return TabBarComponent.Item(
-                        item: item.item,
-                        action: { [weak self] isLongTap in
-                            guard let self else {
-                                return
-                            }
-                            if let index = self.tabBarItems.firstIndex(where: { AnyHashable(ObjectIdentifier($0.item)) == itemId }) {
-                                self.itemSelected(index, isLongTap, [])
-                            }
-                        },
-                        contextAction: { [weak self] gesture, sourceView in
-                            guard let self else {
-                                return
-                            }
-                            if let index = self.tabBarItems.firstIndex(where: { AnyHashable(ObjectIdentifier($0.item)) == itemId }) {
-                                self.contextAction(index, sourceView, gesture)
-                            }
-                        }
-                    )
-                },
-                selectedId: selectedId,
-                isTablet: params.layout.metrics.isTablet
-            )),
-            environment: {},
-            containerSize: CGSize(width: params.layout.size.width - sideInset * 2.0, height: 100.0)
+        // Pass data to your Liquid Glass Node
+        self.tabBarNode.tabBarItems = self.tabBarItems
+        self.tabBarNode.selectedIndex = self.selectedIndex
+
+        // Calculate Frame
+        let tabBarHeight = 49.0 + bottomInset
+        let tabBarFrame = CGRect(
+            x: 0,
+            y: params.layout.size.height - (self.tabBarHidden ? 0.0 : tabBarHeight),
+            width: params.layout.size.width,
+            height: tabBarHeight
         )
-        let tabBarFrame = CGRect(origin: CGPoint(x: floor((params.layout.size.width - tabBarSize.width) * 0.5), y: params.layout.size.height - (self.tabBarHidden ? 0.0 : (tabBarSize.height + bottomInset))), size: tabBarSize)
+
+        // Update Tab Bar Layout
+        transition.updateFrame(node: self.tabBarNode, frame: tabBarFrame)
+        self.tabBarNode.updateLayout(
+            size: tabBarFrame.size,
+            leftInset: params.layout.safeInsets.left,
+            rightInset: params.layout.safeInsets.right,
+            additionalSideInsets: params.layout.additionalInsets,
+            bottomInset: bottomInset,
+            transition: transition
+        )
         
-        if let tabBarComponentView = self.tabBarView.view {
-            if tabBarComponentView.superview == nil {
-                self.view.addSubview(tabBarComponentView)
-            }
-            transition.updateFrame(view: tabBarComponentView, frame: tabBarFrame)
-            transition.updateAlpha(layer: tabBarComponentView.layer, alpha: params.toolbar == nil ? 1.0 : 0.0)
-        }
+        // Update tab bar visibility based on toolbar presence
+        transition.updateAlpha(node: self.tabBarNode, alpha: params.toolbar == nil ? 1.0 : 0.0)
         
+        // Update disabled overlay
         transition.updateFrame(node: self.disabledOverlayNode, frame: tabBarFrame)
         
+        // Handle Toolbar
         let toolbarHeight = 50.0 + params.layout.insets(options: options).bottom
         let toolbarFrame = CGRect(origin: CGPoint(x: 0.0, y: params.layout.size.height - toolbarHeight), size: CGSize(width: params.layout.size.width, height: toolbarHeight))
         
@@ -278,21 +259,19 @@ final class TabBarControllerNode: ASDisplayNode {
             })
         }
         
-        return params.layout.size.height - tabBarFrame.minY
+        // Return the bottom inset
+        return self.tabBarHidden ? 0.0 : tabBarHeight
     }
     
     func frameForControllerTab(at index: Int) -> CGRect? {
-        guard let tabBarView = self.tabBarView.view as? TabBarComponent.View else {
+        guard let itemFrame = self.tabBarNode.frameForControllerTab(at: index) else {
             return nil
         }
-        guard let itemFrame = tabBarView.frameForItem(at: index) else {
-            return nil
-        }
-        return self.view.convert(itemFrame, from: tabBarView)
+        return self.view.convert(itemFrame, from: self.tabBarNode.view)
     }
     
     func isPointInsideContentArea(point: CGPoint) -> Bool {
-        guard let tabBarView = self.tabBarView.view else {
+        guard let tabBarView = self.tabBarNode.view else {
             return false
         }
         if point.y < tabBarView.frame.minY {

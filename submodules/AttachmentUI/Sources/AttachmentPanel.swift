@@ -32,6 +32,17 @@ private let smallButtonWidth: CGFloat = 69.0
 private let iconSize = CGSize(width: 30.0, height: 30.0)
 private let glassPanelSideInset: CGFloat = 20.0
 
+// MARK: - Liquid Glass Configuration for Attach Buttons
+private struct AttachButtonGlassConfig {
+    static let pressedScale: CGFloat = 0.92
+    static let pressDownDuration: TimeInterval = 0.12
+    static let bounceScale: CGFloat = 1.10
+    static let springDamping: CGFloat = 0.65
+    static let springVelocity: CGFloat = 0.5
+    static let releaseDuration: TimeInterval = 0.4
+    static let cornerRadius: CGFloat = 16.0
+}
+
 private final class IconComponent: Component {
     public let account: Account
     public let name: String
@@ -125,6 +136,264 @@ private final class IconComponent: Component {
     }
 }
 
+// MARK: - Liquid Glass Attach Button View
+
+private final class LiquidGlassAttachButtonView: UIView {
+    // Glass layers
+    private var glassBlurView: UIVisualEffectView?
+    private var specularLayer: CAGradientLayer?
+    private var borderLayer: CAShapeLayer?
+    private var pressHighlightLayer: CALayer?
+
+    // State
+    private var isPressed = false
+    private var lightImpact: UIImpactFeedbackGenerator?
+
+    // Callbacks
+    var onTap: (() -> Void)?
+    var onLongPress: (() -> Void)?
+
+    override init(frame: CGRect) {
+        super.init(frame: frame)
+        setupGlassEffect()
+        setupGestures()
+        setupHaptics()
+    }
+
+    required init?(coder: NSCoder) {
+        fatalError("init(coder:) has not been implemented")
+    }
+
+    private func setupGlassEffect() {
+        // 1. Blur view (subtle for icons)
+        let blurEffect = UIBlurEffect(style: .systemUltraThinMaterial)
+        let blur = UIVisualEffectView(effect: blurEffect)
+        blur.layer.cornerRadius = AttachButtonGlassConfig.cornerRadius
+        blur.clipsToBounds = true
+        blur.alpha = 0  // Start hidden, show on press
+        blur.isUserInteractionEnabled = false
+        insertSubview(blur, at: 0)
+        self.glassBlurView = blur
+
+        // 2. Specular highlight
+        let specular = CAGradientLayer()
+        specular.colors = [
+            UIColor.white.withAlphaComponent(0.3).cgColor,
+            UIColor.white.withAlphaComponent(0.1).cgColor,
+            UIColor.clear.cgColor
+        ]
+        specular.locations = [0.0, 0.3, 1.0]
+        specular.startPoint = CGPoint(x: 0.5, y: 0)
+        specular.endPoint = CGPoint(x: 0.5, y: 1)
+        specular.cornerRadius = AttachButtonGlassConfig.cornerRadius
+        specular.opacity = 0
+        layer.addSublayer(specular)
+        self.specularLayer = specular
+
+        // 3. Border glow
+        let border = CAShapeLayer()
+        border.fillColor = UIColor.clear.cgColor
+        border.strokeColor = UIColor.white.withAlphaComponent(0.2).cgColor
+        border.lineWidth = 0.5
+        border.opacity = 0
+        layer.addSublayer(border)
+        self.borderLayer = border
+
+        // 4. Press highlight
+        let press = CALayer()
+        press.backgroundColor = UIColor.white.withAlphaComponent(0.15).cgColor
+        press.cornerRadius = AttachButtonGlassConfig.cornerRadius
+        press.opacity = 0
+        layer.addSublayer(press)
+        self.pressHighlightLayer = press
+    }
+
+    private func setupGestures() {
+        let tap = UITapGestureRecognizer(target: self, action: #selector(handleTap))
+        addGestureRecognizer(tap)
+
+        let longPress = UILongPressGestureRecognizer(target: self, action: #selector(handleLongPress))
+        longPress.minimumPressDuration = 0.3
+        addGestureRecognizer(longPress)
+    }
+
+    private func setupHaptics() {
+        if #available(iOS 10.0, *) {
+            lightImpact = UIImpactFeedbackGenerator(style: .light)
+            lightImpact?.prepare()
+        }
+    }
+
+    override func layoutSubviews() {
+        super.layoutSubviews()
+
+        let glassFrame = bounds.insetBy(dx: 4, dy: 4)
+        glassBlurView?.frame = glassFrame
+
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        specularLayer?.frame = glassFrame
+        pressHighlightLayer?.frame = glassFrame
+
+        let path = UIBezierPath(roundedRect: glassFrame, cornerRadius: AttachButtonGlassConfig.cornerRadius)
+        borderLayer?.path = path.cgPath
+        borderLayer?.frame = bounds
+        CATransaction.commit()
+    }
+
+    // MARK: - Touch Handling
+
+    override func touchesBegan(_ touches: Set<UITouch>, with event: UIEvent?) {
+        super.touchesBegan(touches, with: event)
+        animatePressDown()
+    }
+
+    override func touchesEnded(_ touches: Set<UITouch>, with event: UIEvent?) {
+        super.touchesEnded(touches, with: event)
+        animateRelease()
+    }
+
+    override func touchesCancelled(_ touches: Set<UITouch>, with event: UIEvent?) {
+        super.touchesCancelled(touches, with: event)
+        animateRelease()
+    }
+
+    @objc private func handleTap() {
+        onTap?()
+    }
+
+    @objc private func handleLongPress(_ gesture: UILongPressGestureRecognizer) {
+        if gesture.state == .began {
+            onLongPress?()
+        }
+    }
+
+    // MARK: - Liquid Glass Animations
+
+    private func animatePressDown() {
+        guard !isPressed else { return }
+        isPressed = true
+
+        lightImpact?.impactOccurred()
+
+        // Scale down to 92%
+        UIView.animate(
+            withDuration: AttachButtonGlassConfig.pressDownDuration,
+            delay: 0,
+            options: [.curveEaseOut, .allowUserInteraction],
+            animations: {
+                self.transform = CGAffineTransform(
+                    scaleX: AttachButtonGlassConfig.pressedScale,
+                    y: AttachButtonGlassConfig.pressedScale
+                )
+            }
+        )
+
+        // Show glass effects
+        CATransaction.begin()
+        CATransaction.setAnimationDuration(AttachButtonGlassConfig.pressDownDuration)
+        glassBlurView?.alpha = 0.8
+        specularLayer?.opacity = 0.3
+        borderLayer?.opacity = 1.0
+        pressHighlightLayer?.opacity = 1.0
+        CATransaction.commit()
+    }
+
+    private func animateRelease() {
+        guard isPressed else { return }
+        isPressed = false
+
+        // Spring back with 0.65 damping
+        UIView.animate(
+            withDuration: AttachButtonGlassConfig.releaseDuration,
+            delay: 0,
+            usingSpringWithDamping: AttachButtonGlassConfig.springDamping,
+            initialSpringVelocity: AttachButtonGlassConfig.springVelocity,
+            options: [.allowUserInteraction],
+            animations: {
+                self.transform = .identity
+            }
+        )
+
+        // Hide glass effects
+        CATransaction.begin()
+        CATransaction.setAnimationDuration(AttachButtonGlassConfig.releaseDuration)
+        glassBlurView?.alpha = 0
+        specularLayer?.opacity = 0
+        borderLayer?.opacity = 0
+        pressHighlightLayer?.opacity = 0
+        CATransaction.commit()
+    }
+
+    /// Selection bounce animation (110% then spring back)
+    func animateSelectionBounce() {
+        UIView.animate(
+            withDuration: 0.15,
+            delay: 0,
+            options: [.curveEaseOut],
+            animations: {
+                self.transform = CGAffineTransform(
+                    scaleX: AttachButtonGlassConfig.bounceScale,
+                    y: AttachButtonGlassConfig.bounceScale
+                )
+            }
+        ) { _ in
+            UIView.animate(
+                withDuration: AttachButtonGlassConfig.releaseDuration,
+                delay: 0,
+                usingSpringWithDamping: AttachButtonGlassConfig.springDamping,
+                initialSpringVelocity: AttachButtonGlassConfig.springVelocity,
+                options: [],
+                animations: {
+                    self.transform = .identity
+                }
+            )
+        }
+    }
+}
+
+// MARK: - Liquid Glass Button Component
+
+private final class LiquidGlassButtonComponent: Component {
+    let action: () -> Void
+    let longPressAction: () -> Void
+    let isSelected: Bool
+
+    init(action: @escaping () -> Void, longPressAction: @escaping () -> Void, isSelected: Bool) {
+        self.action = action
+        self.longPressAction = longPressAction
+        self.isSelected = isSelected
+    }
+
+    static func ==(lhs: LiquidGlassButtonComponent, rhs: LiquidGlassButtonComponent) -> Bool {
+        return lhs.isSelected == rhs.isSelected
+    }
+
+    final class View: LiquidGlassAttachButtonView {
+        private var component: LiquidGlassButtonComponent?
+
+        func update(component: LiquidGlassButtonComponent, availableSize: CGSize, transition: ComponentTransition) -> CGSize {
+            if self.component?.isSelected != component.isSelected && component.isSelected {
+                self.animateSelectionBounce()
+            }
+
+            self.component = component
+            self.onTap = component.action
+            self.onLongPress = component.longPressAction
+
+            return availableSize
+        }
+    }
+
+    func makeView() -> View {
+        return View(frame: .zero)
+    }
+
+    func update(view: View, availableSize: CGSize, state: EmptyComponentState, environment: Environment<Empty>, transition: ComponentTransition) -> CGSize {
+        return view.update(component: self, availableSize: availableSize, transition: transition)
+    }
+}
+
 
 private final class AttachButtonComponent: CombinedComponent {
     enum Style {
@@ -193,6 +462,7 @@ private final class AttachButtonComponent: CombinedComponent {
         let animatedIcon = Child(AnimatedStickerComponent.self)
         let title = Child(MultilineTextComponent.self)
         let button = Child(Rectangle.self)
+        let glassButton = Child(LiquidGlassButtonComponent.self)
 
         return { context in
             let name: String
@@ -328,33 +598,48 @@ private final class AttachButtonComponent: CombinedComponent {
             )
             
             let size = CGSize(width: max(component.isFirstOrLast ? context.availableSize.width : 64.0, title.size.width + 24.0), height: context.availableSize.height)
-            
-            let button = button.update(
-                component: Rectangle(
-                    color: .clear,
-                    width: context.availableSize.width,
-                    height: context.availableSize.height
-                ),
-                availableSize: context.availableSize,
-                transition: .immediate
-            )
 
             let titleFrame = CGRect(origin: CGPoint(x: floorToScreenPixels((context.availableSize.width - title.size.width) / 2.0), y: iconFrame.midY + spacing), size: title.size)
             context.add(title
                 .position(CGPoint(x: titleFrame.midX, y: titleFrame.midY))
             )
-            
-            context.add(button
-                .position(CGPoint(x: context.availableSize.width / 2.0, y: context.availableSize.height / 2.0))
-                .gesture(.tap {
-                    component.action()
-                })
-                .gesture(.longPress({ state in
-                    if case .began = state {
-                        component.longPressAction()
-                    }
-                }))
-            )
+
+            // Use liquid glass button for glass style, regular button for legacy
+            if case .glass = component.style {
+                let glassBtn = glassButton.update(
+                    component: LiquidGlassButtonComponent(
+                        action: component.action,
+                        longPressAction: component.longPressAction,
+                        isSelected: component.isSelected
+                    ),
+                    availableSize: context.availableSize,
+                    transition: context.transition
+                )
+                context.add(glassBtn
+                    .position(CGPoint(x: context.availableSize.width / 2.0, y: context.availableSize.height / 2.0))
+                )
+            } else {
+                let btn = button.update(
+                    component: Rectangle(
+                        color: .clear,
+                        width: context.availableSize.width,
+                        height: context.availableSize.height
+                    ),
+                    availableSize: context.availableSize,
+                    transition: .immediate
+                )
+                context.add(btn
+                    .position(CGPoint(x: context.availableSize.width / 2.0, y: context.availableSize.height / 2.0))
+                    .gesture(.tap {
+                        component.action()
+                    })
+                    .gesture(.longPress({ state in
+                        if case .began = state {
+                            component.longPressAction()
+                        }
+                    }))
+                )
+            }
                         
             return size
         }

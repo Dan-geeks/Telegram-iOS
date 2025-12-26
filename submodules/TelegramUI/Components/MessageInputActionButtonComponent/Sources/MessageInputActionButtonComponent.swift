@@ -14,6 +14,16 @@ import ReactionButtonListComponent
 import LottieComponent
 import GlassBackgroundComponent
 
+/// Liquid Glass animation configuration for action buttons
+private struct ActionButtonGlassConfig {
+    static let pressedScale: CGFloat = 0.92
+    static let pressDownDuration: TimeInterval = 0.12
+    static let bounceScale: CGFloat = 1.10
+    static let springDamping: CGFloat = 0.65
+    static let springVelocity: CGFloat = 0.5
+    static let releaseDuration: TimeInterval = 0.4
+}
+
 private class ButtonIcon: Equatable {
     enum IconType: Equatable {
         case none
@@ -266,7 +276,13 @@ public final class MessageInputActionButtonComponent: Component {
         private var moreButton: MoreHeaderButton?
         private var animation: ComponentView<Empty>?
         private var reactionIconView: ReactionIconView?
-        
+
+        // MARK: - Liquid Glass Properties
+        private var glassSpecularLayer: CAGradientLayer?
+        private var glassBorderLayer: CAShapeLayer?
+        private var glassPressHighlightLayer: CALayer?
+        private var glassLightImpact: UIImpactFeedbackGenerator?
+
         private var component: MessageInputActionButtonComponent?
         private weak var componentState: EmptyComponentState?
         
@@ -312,11 +328,20 @@ public final class MessageInputActionButtonComponent: Component {
                 guard let self else {
                     return
                 }
-                
-                let scale: CGFloat = highlighted ? 0.6 : 1.0
-                
-                let transition = ComponentTransition(animation: .curve(duration: highlighted ? 0.5 : 0.3, curve: .spring))
-                transition.setSublayerTransform(view: self, transform: CATransform3DMakeScale(scale, scale, 1.0))
+
+                // Use Liquid Glass animations if glass style is active
+                if case .glass = self.component?.style {
+                    if highlighted {
+                        self.animateGlassPressDown()
+                    } else {
+                        self.animateGlassRelease()
+                    }
+                } else {
+                    // Legacy animation for non-glass buttons
+                    let scale: CGFloat = highlighted ? 0.6 : 1.0
+                    let transition = ComponentTransition(animation: .curve(duration: highlighted ? 0.5 : 0.3, curve: .spring))
+                    transition.setSublayerTransform(view: self, transform: CATransform3DMakeScale(scale, scale, 1.0))
+                }
             }
             
             self.button.addTarget(self, action: #selector(self.touchDown), forControlEvents: .touchDown)
@@ -340,13 +365,105 @@ public final class MessageInputActionButtonComponent: Component {
             if !self.acceptNextButtonPress {
                 return
             }
-                
+
             guard let component = self.component else {
                 return
             }
             component.action(component.mode, .up, false)
         }
-                        
+
+        // MARK: - Liquid Glass Setup
+
+        private func setupLiquidGlassLayers() {
+            // Setup specular highlight layer
+            let specular = CAGradientLayer()
+            specular.colors = [
+                UIColor.white.withAlphaComponent(0.35).cgColor,
+                UIColor.white.withAlphaComponent(0.1).cgColor,
+                UIColor.clear.cgColor
+            ]
+            specular.locations = [0.0, 0.3, 1.0]
+            specular.startPoint = CGPoint(x: 0.5, y: 0)
+            specular.endPoint = CGPoint(x: 0.5, y: 1)
+            specular.opacity = 0.25
+            self.button.layer.addSublayer(specular)
+            self.glassSpecularLayer = specular
+
+            // Setup border glow layer
+            let border = CAShapeLayer()
+            border.fillColor = UIColor.clear.cgColor
+            border.strokeColor = UIColor.white.withAlphaComponent(0.2).cgColor
+            border.lineWidth = 0.5
+            self.button.layer.addSublayer(border)
+            self.glassBorderLayer = border
+
+            // Setup press highlight layer
+            let pressHighlight = CALayer()
+            pressHighlight.backgroundColor = UIColor.white.withAlphaComponent(0.2).cgColor
+            pressHighlight.opacity = 0.0
+            self.button.layer.addSublayer(pressHighlight)
+            self.glassPressHighlightLayer = pressHighlight
+
+            // Setup haptic feedback
+            self.glassLightImpact = UIImpactFeedbackGenerator(style: .light)
+            self.glassLightImpact?.prepare()
+        }
+
+        private func updateLiquidGlassLayerFrames(buttonSize: CGSize) {
+            let cornerRadius = buttonSize.height / 2.0
+
+            CATransaction.begin()
+            CATransaction.setDisableActions(true)
+
+            glassSpecularLayer?.frame = CGRect(origin: .zero, size: buttonSize)
+            glassSpecularLayer?.cornerRadius = cornerRadius
+
+            glassPressHighlightLayer?.frame = CGRect(origin: .zero, size: buttonSize)
+            glassPressHighlightLayer?.cornerRadius = cornerRadius
+
+            let borderPath = UIBezierPath(
+                roundedRect: CGRect(origin: .zero, size: buttonSize).insetBy(dx: 0.25, dy: 0.25),
+                cornerRadius: cornerRadius
+            )
+            glassBorderLayer?.path = borderPath.cgPath
+            glassBorderLayer?.frame = CGRect(origin: .zero, size: buttonSize)
+
+            CATransaction.commit()
+        }
+
+        // MARK: - Liquid Glass Animations
+
+        private func animateGlassPressDown() {
+            guard glassLightImpact != nil else { return }
+
+            // Trigger light haptic feedback
+            glassLightImpact?.impactOccurred()
+
+            // Quick scale down with subtle highlight
+            let transition = ComponentTransition(animation: .curve(duration: ActionButtonGlassConfig.pressDownDuration, curve: .easeOut))
+            transition.setSublayerTransform(view: self, transform: CATransform3DMakeScale(ActionButtonGlassConfig.pressedScale, ActionButtonGlassConfig.pressedScale, 1.0))
+
+            CATransaction.begin()
+            CATransaction.setAnimationDuration(ActionButtonGlassConfig.pressDownDuration)
+            CATransaction.setAnimationTimingFunction(CAMediaTimingFunction(name: .easeOut))
+            glassPressHighlightLayer?.opacity = 0.3
+            CATransaction.commit()
+        }
+
+        private func animateGlassRelease() {
+            guard glassLightImpact != nil else { return }
+
+            // Spring back to normal size
+            let transition = ComponentTransition(animation: .curve(duration: ActionButtonGlassConfig.releaseDuration, curve: .spring))
+            transition.setSublayerTransform(view: self, transform: CATransform3DIdentity)
+
+            CATransaction.begin()
+            CATransaction.setAnimationDuration(ActionButtonGlassConfig.releaseDuration)
+            CATransaction.setAnimationTimingFunction(CAMediaTimingFunction(name: .easeInEaseOut))
+            glassPressHighlightLayer?.opacity = 0.0
+            CATransaction.commit()
+        }
+
         func update(component: MessageInputActionButtonComponent, availableSize: CGSize, state: EmptyComponentState, environment: Environment<Empty>, transition: ComponentTransition) -> CGSize {
             let previousComponent = self.component
             self.component = component
@@ -529,24 +646,30 @@ public final class MessageInputActionButtonComponent: Component {
                     backgroundView = GlassBackgroundView()
                     self.button.view.insertSubview(backgroundView, at: 0)
                     self.backgroundView = backgroundView
+
+                    // Setup Liquid Glass layers on first creation
+                    self.setupLiquidGlassLayers()
                 }
-                
+
                 var tintColor = UIColor(rgb: 0x25272e, alpha: 0.72)
                 let tintKind: GlassBackgroundView.TintColor.Kind = .custom
                 if case .send = component.mode {
                     tintColor = UIColor(rgb: 0x029dff)
                 }
-                
+
                 let glassTint: GlassBackgroundView.TintColor
                 if isTinted {
                     glassTint = .init(kind: tintKind, color: tintColor)
                 } else {
                     glassTint = .init(kind: .panel, color: defaultDarkPresentationTheme.chat.inputPanel.inputBackgroundColor.withMultipliedAlpha(0.7))
                 }
-                
+
                 let buttonSize = CGSize(width: 40.0, height: 40.0)
                 backgroundView.update(size: buttonSize, cornerRadius: buttonSize.height / 2.0, isDark: true, tintColor: glassTint, transition: transition)
                 backgroundView.frame = CGRect(origin: .zero, size: buttonSize)
+
+                // Update Liquid Glass layer frames
+                self.updateLiquidGlassLayerFrames(buttonSize: buttonSize)
             }
             
             if self.sendIconView.image == nil || previousComponent?.mode.icon != component.mode.icon {

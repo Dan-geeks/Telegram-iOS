@@ -10,6 +10,16 @@ import ComponentFlow
 import AccountContext
 import AnimatedCountLabelNode
 
+// MARK: - Liquid Glass Configuration for Send Button
+private struct SendButtonGlassConfig {
+    static let pressedScale: CGFloat = 0.92
+    static let pressDownDuration: TimeInterval = 0.12
+    static let bounceScale: CGFloat = 1.10
+    static let springDamping: CGFloat = 0.65
+    static let springVelocity: CGFloat = 0.5
+    static let releaseDuration: TimeInterval = 0.4
+}
+
 final class AttachmentTextInputActionButtonsNode: ASDisplayNode, ChatSendMessageActionSheetControllerSourceSendButtonNode {
     private let strings: PresentationStrings
     private let glass: Bool
@@ -21,7 +31,14 @@ final class AttachmentTextInputActionButtonsNode: ASDisplayNode, ChatSendMessage
     var animatingSendButton = false
     let textNode: ImmediateAnimatedCountLabelNode
     let iconNode: ASImageNode
-    
+
+    // Liquid Glass layers
+    private var glassBlurView: UIVisualEffectView?
+    private var glassSpecularLayer: CAGradientLayer?
+    private var glassBorderLayer: CAShapeLayer?
+    private var glassPressLayer: CALayer?
+    private var lightImpact: UIImpactFeedbackGenerator?
+
     private var theme: PresentationTheme
 
     var sendButtonLongPressed: ((ASDisplayNode, ContextGesture) -> Void)?
@@ -63,7 +80,17 @@ final class AttachmentTextInputActionButtonsNode: ASDisplayNode, ChatSendMessage
         self.accessibilityTraits = [.button, .notEnabled]
         
         self.sendButton.highligthedChanged = { [weak self] highlighted in
-            if let strongSelf = self {
+            guard let strongSelf = self else { return }
+
+            if strongSelf.glass {
+                // Liquid Glass animations
+                if highlighted {
+                    strongSelf.animateGlassPressDown()
+                } else {
+                    strongSelf.animateGlassRelease()
+                }
+            } else {
+                // Original legacy behavior
                 if !strongSelf.sendButtonLongPressEnabled {
                     if highlighted {
                         strongSelf.sendContainerNode.layer.removeAnimation(forKey: "opacity")
@@ -93,7 +120,9 @@ final class AttachmentTextInputActionButtonsNode: ASDisplayNode, ChatSendMessage
     
     override func didLoad() {
         super.didLoad()
-        
+
+        setupLiquidGlassEffect()
+
         let gestureRecognizer = ContextGesture(target: nil, action: nil)
         gestureRecognizer.isEnabled = self.sendButtonLongPressEnabled
         self.gestureRecognizer = gestureRecognizer
@@ -106,10 +135,105 @@ final class AttachmentTextInputActionButtonsNode: ASDisplayNode, ChatSendMessage
                 strongSelf.sendButtonLongPressed?(strongSelf, recognizer)
             }
         }
-        
+
         self.sendButtonPointerInteraction = PointerInteraction(view: self.sendButton.view, customInteractionView: self.backgroundNode.view, style: .lift)
     }
-    
+
+    private func setupLiquidGlassEffect() {
+        guard glass else { return }
+
+        // Initialize haptics
+        if #available(iOS 10.0, *) {
+            lightImpact = UIImpactFeedbackGenerator(style: .light)
+            lightImpact?.prepare()
+        }
+
+        // 1. Blur view
+        let blurEffect = UIBlurEffect(style: .systemUltraThinMaterial)
+        let blur = UIVisualEffectView(effect: blurEffect)
+        blur.isUserInteractionEnabled = false
+        blur.alpha = 0.6
+        backgroundNode.view.insertSubview(blur, at: 0)
+        self.glassBlurView = blur
+
+        // 2. Specular highlight
+        let specular = CAGradientLayer()
+        specular.colors = [
+            UIColor.white.withAlphaComponent(0.4).cgColor,
+            UIColor.white.withAlphaComponent(0.1).cgColor,
+            UIColor.clear.cgColor
+        ]
+        specular.locations = [0.0, 0.35, 1.0]
+        specular.startPoint = CGPoint(x: 0.5, y: 0)
+        specular.endPoint = CGPoint(x: 0.5, y: 1)
+        specular.opacity = 0.25
+        backgroundNode.layer.addSublayer(specular)
+        self.glassSpecularLayer = specular
+
+        // 3. Border
+        let border = CAShapeLayer()
+        border.fillColor = UIColor.clear.cgColor
+        border.strokeColor = UIColor.white.withAlphaComponent(0.25).cgColor
+        border.lineWidth = 0.5
+        backgroundNode.layer.addSublayer(border)
+        self.glassBorderLayer = border
+
+        // 4. Press highlight
+        let press = CALayer()
+        press.backgroundColor = UIColor.white.withAlphaComponent(0.2).cgColor
+        press.opacity = 0
+        backgroundNode.layer.addSublayer(press)
+        self.glassPressLayer = press
+    }
+
+    // MARK: - Liquid Glass Animations
+
+    private func animateGlassPressDown() {
+        lightImpact?.impactOccurred()
+
+        // Scale down
+        UIView.animate(
+            withDuration: SendButtonGlassConfig.pressDownDuration,
+            delay: 0,
+            options: [.curveEaseOut, .allowUserInteraction],
+            animations: {
+                self.sendContainerNode.transform = CATransform3DMakeScale(
+                    SendButtonGlassConfig.pressedScale,
+                    SendButtonGlassConfig.pressedScale,
+                    1.0
+                )
+            }
+        )
+
+        // Show press highlight
+        CATransaction.begin()
+        CATransaction.setAnimationDuration(SendButtonGlassConfig.pressDownDuration)
+        glassPressLayer?.opacity = 1.0
+        glassSpecularLayer?.opacity = 0.4
+        CATransaction.commit()
+    }
+
+    private func animateGlassRelease() {
+        // Spring back
+        UIView.animate(
+            withDuration: SendButtonGlassConfig.releaseDuration,
+            delay: 0,
+            usingSpringWithDamping: SendButtonGlassConfig.springDamping,
+            initialSpringVelocity: SendButtonGlassConfig.springVelocity,
+            options: [.allowUserInteraction],
+            animations: {
+                self.sendContainerNode.transform = CATransform3DIdentity
+            }
+        )
+
+        // Hide press highlight
+        CATransaction.begin()
+        CATransaction.setAnimationDuration(SendButtonGlassConfig.releaseDuration)
+        glassPressLayer?.opacity = 0
+        glassSpecularLayer?.opacity = 0.25
+        CATransaction.commit()
+    }
+
     func setImage(_ image: UIImage?) {
         self.iconNode.image = image
     }
@@ -182,7 +306,26 @@ final class AttachmentTextInputActionButtonsNode: ASDisplayNode, ChatSendMessage
         if let iconSize = self.iconNode.image?.size {
             transition.updateFrame(node: self.iconNode, frame: CGRect(origin: CGPoint(x: floorToScreenPixels((backgroundSize.width - iconSize.width) / 2.0), y: floorToScreenPixels((backgroundSize.height - iconSize.height) / 2.0)), size: iconSize))
         }
-        
+
+        // Update glass layer frames
+        if glass {
+            let glassFrame = backgroundNode.frame
+            glassBlurView?.frame = CGRect(origin: .zero, size: glassFrame.size)
+            glassBlurView?.layer.cornerRadius = backgroundNode.cornerRadius
+
+            CATransaction.begin()
+            CATransaction.setDisableActions(true)
+            glassSpecularLayer?.frame = CGRect(origin: .zero, size: glassFrame.size)
+            glassSpecularLayer?.cornerRadius = backgroundNode.cornerRadius
+            glassPressLayer?.frame = CGRect(origin: .zero, size: glassFrame.size)
+            glassPressLayer?.cornerRadius = backgroundNode.cornerRadius
+
+            let path = UIBezierPath(roundedRect: CGRect(origin: .zero, size: glassFrame.size), cornerRadius: backgroundNode.cornerRadius)
+            glassBorderLayer?.path = path.cgPath
+            glassBorderLayer?.frame = CGRect(origin: .zero, size: glassFrame.size)
+            CATransaction.commit()
+        }
+
         return buttonSize
     }
     

@@ -171,3 +171,5 @@ final class ChatTextInputAudioRecordingOverlay {
         self.inputLevel = level
     }
 }
+
+

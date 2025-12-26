@@ -13,54 +13,94 @@ import TextBadgeComponent
 import LiquidLens
 import AppBundle
 
+// MARK: - Liquid Glass Animation Configuration
+
+/// Animation configuration matching contest specifications exactly
+private struct LiquidGlassAnimationConfig {
+    /// Scale factor when pressed (92% as per contest spec)
+    static let pressedScale: CGFloat = 0.92
+    
+    /// Duration of the press-down animation (0.12s as per contest spec)
+    static let pressDownDuration: TimeInterval = 0.12
+    
+    /// Scale factor for selection bounce (110% as per contest spec)
+    static let selectionBounceScale: CGFloat = 1.10
+    
+    /// Damping ratio for spring animations (0.65 as per contest spec)
+    static let springDamping: CGFloat = 0.65
+    
+    /// Initial spring velocity
+    static let springVelocity: CGFloat = 0.5
+    
+    /// Duration of the release/bounce animation
+    static let releaseDuration: TimeInterval = 0.4
+    
+    /// Scale when lifted/dragging
+    static let liftedScale: CGFloat = 1.15
+}
+
+// MARK: - Tab Selection Recognizer
+
 private final class TabSelectionRecognizer: UIGestureRecognizer {
     private var initialLocation: CGPoint?
     private var currentLocation: CGPoint?
     
+    /// Callback for press state changes (for animations)
+    var onPressStateChanged: ((Bool, CGPoint?) -> Void)?
+
     override init(target: Any?, action: Selector?) {
         super.init(target: target, action: action)
-        
+
         self.delaysTouchesBegan = false
         self.delaysTouchesEnded = false
     }
-    
+
     override func reset() {
         super.reset()
-        
+
         self.initialLocation = nil
     }
-    
+
     override func touchesBegan(_ touches: Set<UITouch>, with event: UIEvent) {
         super.touchesBegan(touches, with: event)
-        
+
         if self.initialLocation == nil {
             self.initialLocation = touches.first?.location(in: self.view)
         }
         self.currentLocation = self.initialLocation
         
+        // Notify press began
+        self.onPressStateChanged?(true, self.initialLocation)
+
         self.state = .began
     }
-    
+
     override func touchesEnded(_ touches: Set<UITouch>, with event: UIEvent) {
         super.touchesEnded(touches, with: event)
         
+        // Notify press ended
+        self.onPressStateChanged?(false, self.currentLocation)
+
         self.state = .ended
     }
-    
+
     override func touchesCancelled(_ touches: Set<UITouch>, with event: UIEvent) {
         super.touchesCancelled(touches, with: event)
         
+        // Notify press cancelled
+        self.onPressStateChanged?(false, nil)
+
         self.state = .cancelled
     }
-    
+
     override func touchesMoved(_ touches: Set<UITouch>, with event: UIEvent) {
         super.touchesMoved(touches, with: event)
-        
+
         self.currentLocation = touches.first?.location(in: self.view)
-        
+
         self.state = .changed
     }
-    
+
     func translation(in: UIView?) -> CGPoint {
         if let initialLocation = self.initialLocation, let currentLocation = self.currentLocation {
             return CGPoint(x: currentLocation.x - initialLocation.x, y: currentLocation.y - initialLocation.y)
@@ -68,6 +108,8 @@ private final class TabSelectionRecognizer: UIGestureRecognizer {
         return CGPoint()
     }
 }
+
+// MARK: - Tab Bar Search View
 
 public final class TabBarSearchView: UIView {
     private let backgroundView: GlassBackgroundView
@@ -87,7 +129,7 @@ public final class TabBarSearchView: UIView {
         fatalError("init(coder:) has not been implemented")
     }
 
-    public func update(size: CGSize, isDark: Bool, tintColor: GlassBackgroundView.TintColor, iconColor: UIColor, transition: ComponentTransition) { 
+    public func update(size: CGSize, isDark: Bool, tintColor: GlassBackgroundView.TintColor, iconColor: UIColor, transition: ComponentTransition) {
         transition.setFrame(view: self.backgroundView, frame: CGRect(origin: CGPoint(), size: size))
         self.backgroundView.update(size: size, cornerRadius: size.height * 0.5, isDark: isDark, tintColor: tintColor, transition: transition)
 
@@ -102,22 +144,24 @@ public final class TabBarSearchView: UIView {
     }
 }
 
+// MARK: - Tab Bar Component
+
 public final class TabBarComponent: Component {
     public final class Item: Equatable {
         public let item: UITabBarItem
         public let action: (Bool) -> Void
         public let contextAction: ((ContextGesture, ContextExtractedContentContainingView) -> Void)?
-        
+
         fileprivate var id: AnyHashable {
             return AnyHashable(ObjectIdentifier(self.item))
         }
-        
+
         public init(item: UITabBarItem, action: @escaping (Bool) -> Void, contextAction: ((ContextGesture, ContextExtractedContentContainingView) -> Void)?) {
             self.item = item
             self.action = action
             self.contextAction = contextAction
         }
-        
+
         public static func ==(lhs: Item, rhs: Item) -> Bool {
             if lhs === rhs {
                 return true
@@ -131,12 +175,12 @@ public final class TabBarComponent: Component {
             return true
         }
     }
-    
+
     public let theme: PresentationTheme
     public let items: [Item]
     public let selectedId: AnyHashable?
     public let isTablet: Bool
-    
+
     public init(
         theme: PresentationTheme,
         items: [Item],
@@ -148,7 +192,7 @@ public final class TabBarComponent: Component {
         self.selectedId = selectedId
         self.isTablet = isTablet
     }
-    
+
     public static func ==(lhs: TabBarComponent, rhs: TabBarComponent) -> Bool {
         if lhs.theme !== rhs.theme {
             return false
@@ -164,71 +208,93 @@ public final class TabBarComponent: Component {
         }
         return true
     }
-    
+
     public final class View: UIView, UITabBarDelegate, UIGestureRecognizerDelegate {
         private let liquidLensView: LiquidLensView
         private let contextGestureContainerView: ContextControllerSourceView
-        
+
         private var itemViews: [AnyHashable: ComponentView<Empty>] = [:]
         private var selectedItemViews: [AnyHashable: ComponentView<Empty>] = [:]
-        
+
         private var tabSelectionRecognizer: TabSelectionRecognizer?
         private var itemWithActiveContextGesture: AnyHashable?
-        
+
         private var component: TabBarComponent?
         private weak var state: EmptyComponentState?
 
         private var selectionGestureState: (startX: CGFloat, currentX: CGFloat)?
         private var overrideSelectedItemId: AnyHashable?
         
+        // MARK: - Liquid Glass Animation State
+        
+        /// Currently pressed item ID
+        private var pressedItemId: AnyHashable?
+        
+        /// Item that needs selection bounce animation
+        private var pendingBounceItemId: AnyHashable?
+        
+        /// Haptic feedback generators
+        private var lightImpactGenerator: UIImpactFeedbackGenerator?
+        private var mediumImpactGenerator: UIImpactFeedbackGenerator?
+
         public override init(frame: CGRect) {
             self.liquidLensView = LiquidLensView()
-            
+
             self.contextGestureContainerView = ContextControllerSourceView()
             self.contextGestureContainerView.isGestureEnabled = true
-            
+
             super.init(frame: frame)
-            
+
             if #available(iOS 17.0, *) {
                 self.traitOverrides.verticalSizeClass = .compact
                 self.traitOverrides.horizontalSizeClass = .compact
             }
-            
+
             self.addSubview(self.contextGestureContainerView)
-            
+
             self.contextGestureContainerView.addSubview(self.liquidLensView)
             let tabSelectionRecognizer = TabSelectionRecognizer(target: self, action: #selector(self.onTabSelectionGesture(_:)))
             self.tabSelectionRecognizer = tabSelectionRecognizer
+            
+            // Setup press state callback for animations
+            tabSelectionRecognizer.onPressStateChanged = { [weak self] isPressed, location in
+                self?.handlePressStateChanged(isPressed: isPressed, location: location)
+            }
+            
             self.addGestureRecognizer(tabSelectionRecognizer)
             
+            // Initialize haptic generators
+            self.lightImpactGenerator = UIImpactFeedbackGenerator(style: .light)
+            self.mediumImpactGenerator = UIImpactFeedbackGenerator(style: .medium)
+
             self.contextGestureContainerView.shouldBegin = { [weak self] point in
                 guard let self, let component = self.component else {
                     return false
                 }
-                
+
                 if let itemId = self.item(at: point) {
                     guard let item = component.items.first(where: { $0.id == itemId }) else {
-                            return false
+                        return false
+                    }
+                    if item.contextAction == nil {
+                        return false
+                    }
+
+                    self.itemWithActiveContextGesture = itemId
+
+                    let startPoint = point
+                    self.contextGestureContainerView.contextGesture?.externalUpdated = { [weak self] _, point in
+                        guard let self else {
+                            return
                         }
-                        if item.contextAction == nil {
-                            return false
+
+                        let dist = sqrt(pow(startPoint.x - point.x, 2.0) + pow(startPoint.y - point.y, 2.0))
+                        if dist > 10.0 {
+                            self.contextGestureContainerView.contextGesture?.cancel()
                         }
-                        
-                        self.itemWithActiveContextGesture = itemId
-                        
-                        let startPoint = point
-                        self.contextGestureContainerView.contextGesture?.externalUpdated = { [weak self] _, point in
-                            guard let self else {
-                                return
-                            }
-                            
-                            let dist = sqrt(pow(startPoint.x - point.x, 2.0) + pow(startPoint.y - point.y, 2.0))
-                            if dist > 10.0 {
-                                self.contextGestureContainerView.contextGesture?.cancel()
-                            }
-                        }
-                        
-                        return true
+                    }
+
+                    return true
                 }
 
                 return false
@@ -242,10 +308,10 @@ public final class TabBarComponent: Component {
                 guard let itemWithActiveContextGesture = self.itemWithActiveContextGesture else {
                     return
                 }
-                
+
                 var itemView: ItemComponent.View?
                 itemView = self.itemViews[itemWithActiveContextGesture]?.view as? ItemComponent.View
-                
+
                 guard let itemView else {
                     return
                 }
@@ -253,18 +319,18 @@ public final class TabBarComponent: Component {
                 if let tabSelectionRecognizer = self.tabSelectionRecognizer {
                     tabSelectionRecognizer.state = .cancelled
                 }
-                
+
                 guard let item = component.items.first(where: { $0.id == itemWithActiveContextGesture }) else {
                     return
                 }
                 item.contextAction?(gesture, itemView.contextContainerView)
             }
         }
-        
+
         required public init?(coder: NSCoder) {
             fatalError("init(coder:) has not been implemented")
         }
-        
+
         public func tabBar(_ tabBar: UITabBar, didSelect item: UITabBarItem) {
             guard let component = self.component else {
                 return
@@ -275,9 +341,119 @@ public final class TabBarComponent: Component {
                 }
             }
         }
-        
+
         public func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer, shouldRecognizeSimultaneouslyWith otherGestureRecognizer: UIGestureRecognizer) -> Bool {
             return true
+        }
+        
+        // MARK: - Liquid Glass Press Animations
+        
+        /// Handles press state changes for Liquid Glass animations
+        private func handlePressStateChanged(isPressed: Bool, location: CGPoint?) {
+            guard let location = location else {
+                // Touch cancelled, reset any pressed state
+                if let pressedItemId = self.pressedItemId {
+                    self.animateItemRelease(itemId: pressedItemId)
+                    self.pressedItemId = nil
+                }
+                return
+            }
+            
+            let itemId = self.item(at: location)
+            
+            if isPressed {
+                // Press began
+                if let itemId = itemId {
+                    self.pressedItemId = itemId
+                    self.animateItemPressDown(itemId: itemId)
+                }
+            } else {
+                // Press ended
+                if let pressedItemId = self.pressedItemId {
+                    self.animateItemRelease(itemId: pressedItemId)
+                    self.pressedItemId = nil
+                }
+            }
+        }
+        
+        /// Animates press-down effect: 92% scale in 0.12s
+        private func animateItemPressDown(itemId: AnyHashable) {
+            guard let itemView = self.itemViews[itemId]?.view,
+                  let selectedItemView = self.selectedItemViews[itemId]?.view else {
+                return
+            }
+            
+            // Haptic feedback
+            self.lightImpactGenerator?.impactOccurred()
+            
+            // Animate to 92% scale over 0.12s
+            UIView.animate(
+                withDuration: LiquidGlassAnimationConfig.pressDownDuration,
+                delay: 0,
+                options: [.curveEaseOut, .allowUserInteraction],
+                animations: {
+                    let scale = LiquidGlassAnimationConfig.pressedScale
+                    itemView.transform = CGAffineTransform(scaleX: scale, y: scale)
+                    selectedItemView.transform = CGAffineTransform(scaleX: scale, y: scale)
+                }
+            )
+        }
+        
+        /// Animates release effect with spring bounce (0.65 damping)
+        private func animateItemRelease(itemId: AnyHashable) {
+            guard let itemView = self.itemViews[itemId]?.view,
+                  let selectedItemView = self.selectedItemViews[itemId]?.view else {
+                return
+            }
+            
+            // Spring animation back to identity
+            UIView.animate(
+                withDuration: LiquidGlassAnimationConfig.releaseDuration,
+                delay: 0,
+                usingSpringWithDamping: LiquidGlassAnimationConfig.springDamping,
+                initialSpringVelocity: LiquidGlassAnimationConfig.springVelocity,
+                options: [.allowUserInteraction],
+                animations: {
+                    itemView.transform = .identity
+                    selectedItemView.transform = .identity
+                }
+            )
+        }
+        
+        /// Animates selection bounce: scale to 110% then spring back
+        private func animateSelectionBounce(itemId: AnyHashable) {
+            guard let itemView = self.itemViews[itemId]?.view,
+                  let selectedItemView = self.selectedItemViews[itemId]?.view else {
+                return
+            }
+            
+            // Haptic feedback
+            self.mediumImpactGenerator?.impactOccurred()
+            
+            // First scale up to 110%
+            UIView.animate(
+                withDuration: 0.15,
+                delay: 0,
+                options: [.curveEaseOut],
+                animations: {
+                    let scale = LiquidGlassAnimationConfig.selectionBounceScale
+                    itemView.transform = CGAffineTransform(scaleX: scale, y: scale)
+                    selectedItemView.transform = CGAffineTransform(scaleX: scale, y: scale)
+                }
+            ) { _ in
+                // Then spring back to identity
+                UIView.animate(
+                    withDuration: LiquidGlassAnimationConfig.releaseDuration,
+                    delay: 0,
+                    usingSpringWithDamping: LiquidGlassAnimationConfig.springDamping,
+                    initialSpringVelocity: LiquidGlassAnimationConfig.springVelocity,
+                    options: [],
+                    animations: {
+                        itemView.transform = .identity
+                        selectedItemView.transform = .identity
+                    }
+                )
+            }
         }
 
         @objc private func onTabSelectionGesture(_ recognizer: TabSelectionRecognizer) {
@@ -300,19 +476,28 @@ public final class TabBarComponent: Component {
                     guard let item = component.items.first(where: { $0.id == itemId }) else {
                         return
                     }
+                    
+                    // Check if this is a new selection (for bounce animation)
+                    let isNewSelection = component.selectedId != itemId
+                    
                     self.overrideSelectedItemId = itemId
                     item.action(false)
+                    
+                    // Trigger selection bounce for new selection
+                    if isNewSelection {
+                        self.pendingBounceItemId = itemId
+                    }
                 }
                 self.state?.updated(transition: .spring(duration: 0.4), isLocal: true)
             default:
                 break
             }
         }
-        
+
         override public func hitTest(_ point: CGPoint, with event: UIEvent?) -> UIView? {
             return super.hitTest(point, with: event)
         }
-        
+
         public func frameForItem(at index: Int) -> CGRect? {
             guard let component = self.component else {
                 return nil
@@ -347,17 +532,17 @@ public final class TabBarComponent: Component {
             }
             return closestItem?.0
         }
-        
+
         public override func didMoveToWindow() {
             super.didMoveToWindow()
-            
+
             self.state?.updated()
         }
-        
+
         func update(component: TabBarComponent, availableSize: CGSize, state: EmptyComponentState, environment: Environment<Empty>, transition: ComponentTransition) -> CGSize {
             let innerInset: CGFloat = 4.0
             let availableSize = CGSize(width: min(500.0, availableSize.width), height: availableSize.height)
-            
+
             let previousComponent = self.component
             self.component = component
             self.state = state
@@ -365,7 +550,7 @@ public final class TabBarComponent: Component {
             let _ = innerInset
             let _ = availableSize
             let _ = previousComponent
-            
+
             self.overrideUserInterfaceStyle = component.theme.overallDarkAppearance ? .dark : .light
 
             let itemSize = CGSize(width: floor((availableSize.width - innerInset * 2.0) / CGFloat(component.items.count)), height: 56.0)
@@ -377,10 +562,10 @@ public final class TabBarComponent: Component {
             for index in 0 ..< component.items.count {
                 let item = component.items[index]
                 validIds.append(item.id)
-                
+
                 let itemView: ComponentView<Empty>
                 var itemTransition = transition
-                
+
                 if let current = self.itemViews[item.id] {
                     itemView = current
                 } else {
@@ -388,7 +573,7 @@ public final class TabBarComponent: Component {
                     itemView = ComponentView()
                     self.itemViews[item.id] = itemView
                 }
-                
+
                 let selectedItemView: ComponentView<Empty>
                 if let current = self.selectedItemViews[item.id] {
                     selectedItemView = current
@@ -396,14 +581,14 @@ public final class TabBarComponent: Component {
                     selectedItemView = ComponentView()
                     self.selectedItemViews[item.id] = selectedItemView
                 }
-                
+
                 let isItemSelected: Bool
                 if let overrideSelectedItemId = self.overrideSelectedItemId {
                     isItemSelected = overrideSelectedItemId == item.id
                 } else {
                     isItemSelected = component.selectedId == item.id
                 }
-                
+
                 let _ = itemView.update(
                     transition: itemTransition,
                     component: AnyComponent(ItemComponent(
@@ -424,7 +609,7 @@ public final class TabBarComponent: Component {
                     environment: {},
                     containerSize: itemSize
                 )
-                
+
                 let itemFrame = CGRect(origin: CGPoint(x: innerInset + CGFloat(index) * itemSize.width, y: floor((size.height - itemSize.height) * 0.5)), size: itemSize)
                 if let itemComponentView = itemView.view as? ItemComponent.View, let selectedItemComponentView = selectedItemView.view as? ItemComponent.View {
                     if itemComponentView.superview == nil {
@@ -437,18 +622,30 @@ public final class TabBarComponent: Component {
                     itemTransition.setFrame(view: itemComponentView, frame: itemFrame)
                     itemTransition.setPosition(view: selectedItemComponentView, position: itemFrame.center)
                     itemTransition.setBounds(view: selectedItemComponentView, bounds: CGRect(origin: CGPoint(), size: itemFrame.size))
-                    itemTransition.setScale(view: selectedItemComponentView, scale: self.selectionGestureState != nil ? 1.15 : 1.0)
                     
+                    // Scale for lifted state (when dragging)
+                    let liftedScale: CGFloat = self.selectionGestureState != nil ? LiquidGlassAnimationConfig.liftedScale : 1.0
+                    itemTransition.setScale(view: selectedItemComponentView, scale: liftedScale)
+
                     if let previousComponent, previousComponent.selectedId != item.id, isItemSelected {
                         itemComponentView.playSelectionAnimation()
                         selectedItemComponentView.playSelectionAnimation()
+                        
+                        // Play selection bounce if this is the pending bounce item
+                        if self.pendingBounceItemId == item.id {
+                            self.pendingBounceItemId = nil
+                            // Delay slightly to let the view settle
+                            DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { [weak self] in
+                                self?.animateSelectionBounce(itemId: item.id)
+                            }
+                        }
                     }
                 }
                 if isItemSelected {
                     selectionFrame = itemFrame
                 }
             }
-            
+
             var removeIds: [AnyHashable] = []
             for (id, itemView) in self.itemViews {
                 if !validIds.contains(id) {
@@ -465,7 +662,7 @@ public final class TabBarComponent: Component {
             transition.setFrame(view: self.contextGestureContainerView, frame: CGRect(origin: CGPoint(), size: size))
 
             transition.setFrame(view: self.liquidLensView, frame: CGRect(origin: CGPoint(), size: size))
-            
+
             let lensSelection: (x: CGFloat, width: CGFloat)
             if let selectionGestureState = self.selectionGestureState {
                 lensSelection = (selectionGestureState.currentX, itemSize.width + innerInset * 2.0)
@@ -480,27 +677,29 @@ public final class TabBarComponent: Component {
             return size
         }
     }
-    
+
     public func makeView() -> View {
         return View(frame: CGRect())
     }
-    
+
     public func update(view: View, availableSize: CGSize, state: EmptyComponentState, environment: Environment<Empty>, transition: ComponentTransition) -> CGSize {
         return view.update(component: self, availableSize: availableSize, state: state, environment: environment, transition: transition)
     }
 }
 
+// MARK: - Item Component
+
 private final class ItemComponent: Component {
     let item: TabBarComponent.Item
     let theme: PresentationTheme
     let isSelected: Bool
-    
+
     init(item: TabBarComponent.Item, theme: PresentationTheme, isSelected: Bool) {
         self.item = item
         self.theme = theme
         self.isSelected = isSelected
     }
-    
+
     static func ==(lhs: ItemComponent, rhs: ItemComponent) -> Bool {
         if lhs.item != rhs.item {
             return false
@@ -513,34 +712,34 @@ private final class ItemComponent: Component {
         }
         return true
     }
-    
+
     final class View: UIView {
         let contextContainerView: ContextExtractedContentContainingView
-        
+
         private var imageIcon: ComponentView<Empty>?
         private var animationIcon: ComponentView<Empty>?
         private let title = ComponentView<Empty>()
         private var badge: ComponentView<Empty>?
-        
+
         private var component: ItemComponent?
         private weak var state: EmptyComponentState?
-        
+
         private var setImageListener: Int?
         private var setSelectedImageListener: Int?
         private var setBadgeListener: Int?
         
         override init(frame: CGRect) {
             self.contextContainerView = ContextExtractedContentContainingView()
-            
+
             super.init(frame: frame)
-            
+
             self.addSubview(self.contextContainerView)
         }
-        
+
         required init?(coder: NSCoder) {
             fatalError("init(coder:) has not been implemented")
         }
-        
+
         deinit {
             if let component = self.component {
                 if let setImageListener = self.setImageListener {
@@ -554,16 +753,16 @@ private final class ItemComponent: Component {
                 }
             }
         }
-        
+
         func playSelectionAnimation() {
             if let animationIconView = self.animationIcon?.view as? LottieComponent.View {
                 animationIconView.playOnce()
             }
         }
-        
+
         func update(component: ItemComponent, availableSize: CGSize, state: EmptyComponentState, environment: Environment<Empty>, transition: ComponentTransition) -> CGSize {
             let previousComponent = self.component
-            
+
             if previousComponent?.item.item !== component.item.item {
                 if let setImageListener = self.setImageListener {
                     self.component?.item.item.removeSetImageListener(setImageListener)
@@ -593,16 +792,16 @@ private final class ItemComponent: Component {
                     self.state?.updated(transition: .immediate, isLocal: true)
                 }
             }
-            
+
             self.component = component
             self.state = state
-            
+
             if let animationName = component.item.item.animationName {
                 if let imageIcon = self.imageIcon {
                     self.imageIcon = nil
                     imageIcon.view?.removeFromSuperview()
                 }
-                
+
                 let animationIcon: ComponentView<Empty>
                 var iconTransition = transition
                 if let current = self.animationIcon {
@@ -612,7 +811,7 @@ private final class ItemComponent: Component {
                     animationIcon = ComponentView()
                     self.animationIcon = animationIcon
                 }
-                
+
                 let iconSize = animationIcon.update(
                     transition: iconTransition,
                     component: AnyComponent(LottieComponent(
@@ -644,7 +843,7 @@ private final class ItemComponent: Component {
                     self.animationIcon = nil
                     animationIcon.view?.removeFromSuperview()
                 }
-                
+
                 let imageIcon: ComponentView<Empty>
                 var iconTransition = transition
                 if let current = self.imageIcon {
@@ -654,7 +853,7 @@ private final class ItemComponent: Component {
                     imageIcon = ComponentView()
                     self.imageIcon = imageIcon
                 }
-                
+
                 let iconSize = imageIcon.update(
                     transition: iconTransition,
                     component: AnyComponent(Image(
@@ -677,7 +876,7 @@ private final class ItemComponent: Component {
                     iconTransition.setFrame(view: imageIconView, frame: iconFrame)
                 }
             }
-            
+
             let titleSize = self.title.update(
                 transition: .immediate,
                 component: AnyComponent(MultilineTextComponent(
@@ -693,7 +892,7 @@ private final class ItemComponent: Component {
                 }
                 titleView.frame = titleFrame
             }
-            
+
             if let badgeText = component.item.item.badgeValue, !badgeText.isEmpty {
                 let badge: ComponentView<Empty>
                 var badgeTransition = transition
@@ -728,19 +927,19 @@ private final class ItemComponent: Component {
                 self.badge = nil
                 badge.view?.removeFromSuperview()
             }
-            
+
             transition.setFrame(view: self.contextContainerView, frame: CGRect(origin: CGPoint(), size: availableSize))
             transition.setFrame(view: self.contextContainerView.contentView, frame: CGRect(origin: CGPoint(), size: availableSize))
             self.contextContainerView.contentRect = CGRect(origin: CGPoint(), size: availableSize)
-            
+
             return availableSize
         }
     }
-    
+
     func makeView() -> View {
         return View(frame: CGRect())
     }
-    
+
     func update(view: View, availableSize: CGSize, state: EmptyComponentState, environment: Environment<Empty>, transition: ComponentTransition) -> CGSize {
         return view.update(component: self, availableSize: availableSize, state: state, environment: environment, transition: transition)
     }
